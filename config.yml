@@ -1,0 +1,50 @@
+# config.yml
+# Environment and API Keys (load from .env if sensitive)
+api_keys:
+  google_api_key: ${GOOGLE_API_KEY}  # Uses env var via dotenv
+  openweather_api_key: ${OPENWEATHERMAP_API_KEY}
+
+# LLM Configuration
+llm:
+  model_name: "gemini-2.5-flash"
+  temperature: 0
+  max_tokens: null
+  timeout: null
+  max_retries: 0
+
+# Embedding Model
+embedding:
+  model_name: "sentence-transformers/all-mpnet-base-v2"
+
+# Document Processing
+document:
+  doc_dir: "data/"
+  pdf_path: "doc/backpacker2.pdf"
+  chunk_size: 400
+  chunk_overlap: 50
+
+# Tools Configuration
+tools:
+  duckduckgo:
+    max_results: 3  # Limit snippets to top 3
+  weather:
+    default_country: "AU"  # For Tasmania context
+  rag:
+    max_sources: 5  # Limit sources in output (optional)
+
+# Agent Configuration
+agent:
+  max_iterations: 8
+  early_stopping_method: "generate"
+
+# Gradio UI
+ui:
+  title: "Tasmania Backpacker Bot"
+  description: "Enter your question about Tasmania backpacking."
+  examples:
+    - "Give the best time to visit Tasmania for backpackers"
+    - "What is the current weather  in  Hobart?"
+    - "What are the visa types for backpackers in Tasmania?"
+    - "What are the visa types for backpackers in Tasmania?"
+  share: false
+  debug: true
