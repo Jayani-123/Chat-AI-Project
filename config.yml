@@ -45,6 +45,6 @@ ui:
     - "Give the best time to visit Tasmania for backpackers"
     - "What is the current weather  in  Hobart?"
     - "What are the visa types for backpackers in Tasmania?"
-    - "What are the visa types for backpackers in Tasmania?"
+    - "How much would a 10-day backpacking trip in Tasmania typically cost?"
   share: false
   debug: true

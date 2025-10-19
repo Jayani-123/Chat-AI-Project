@@ -1,213 +1,284 @@
-# tools.py
 import os
+import json
 import re
-from rag import rag_query
+from datetime import datetime
+from typing import Dict, Any, List
+
+import requests
 from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_community.utilities import OpenWeatherMapAPIWrapper
 from langchain.agents import Tool
-from config import config, get_config_value  # Now imports work
 
-# Initialize base tools (API key already set in config.py)
+from config import config, get_config_value
+from rag import rag_query
+
+# ------------------------------------------------------------------------------------
+# Base tool clients (no routing / no if-else to decide which tool to use)
+# ------------------------------------------------------------------------------------
 search_tool = DuckDuckGoSearchResults(output_format="list")
-#weather_api = OpenWeatherMapAPIWrapper()
-# Initialize weather API with key from .env
+
+# OpenWeatherMap current-conditions client (API key provided via environment)
 weather_api = OpenWeatherMapAPIWrapper(
     openweathermap_api_key=os.getenv("OPENWEATHERMAP_API_KEY")
-    
 )
 
-
+# ------------------------------------------------------------------------------------
+# DuckDuckGo – return compact results with URLs as sources
+# ------------------------------------------------------------------------------------
 def duckduckgo_with_sources(query: str) -> str:
-    """Search DuckDuckGo and format results with URLs as sources."""
-    try:
-        results = search_tool.run(query)
-        if not results:
-            return "No search results found."
-        max_results = get_config_value(config, "tools.duckduckgo.max_results", default=3)
-        formatted_results = []
-        for i, res in enumerate(results[:max_results], 1):
-            title = res.get('title', 'No title')
-            snippet = res.get('snippet', 'No snippet')[:200] + '...' if len(res.get('snippet', '')) > 200 else res.get('snippet', '')
-            url = res.get('link', 'No URL')  # Changed from 'url'
-            formatted_results.append(f"{i}. {title}\n   Snippet: {snippet}\n   Source: {url}")
-        return "Search Results:\n" + "\n\n".join(formatted_results)
-    except Exception as e:
-        return f"Search error: {e}"
+    results = search_tool.run(query) or []
+    max_results = get_config_value(config, "tools.duckduckgo.max_results", default=3)
 
-from openmeteo_py import OWmanager, Options
-from datetime import datetime, timedelta
-import requests
-from datetime import datetime, timedelta
+    def ok(link: str) -> bool:
+        if not link or not link.startswith("http"): return False
+        bad = ("bing.com/aclick", "doubleclick", "/aclk?", "adservice")
+        return not any(b in link for b in bad)
 
-def get_forecast_openmeteo(city_name: str) -> str:
-    """Fetch a 3-day forecast (tomorrow + 2 more days) using Open-Meteo REST API."""
-    try:
-        # Convert city name → latitude/longitude
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=1"
-        geo_resp = requests.get(geo_url).json()
-        if "results" not in geo_resp or len(geo_resp["results"]) == 0:
-            return f" Could not locate city '{city_name}'. Try 'Hobart' or 'Launceston'."
-
-        lat = geo_resp["results"][0]["latitude"]
-        lon = geo_resp["results"][0]["longitude"]
-
-        #  Request 7-day forecast
-        forecast_url = (
-            f"https://api.open-meteo.com/v1/forecast?"
-            f"latitude={lat}&longitude={lon}"
-            f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
-            f"&timezone=auto"
-        )
-        data = requests.get(forecast_url).json()
-
-        # 3️⃣ Prepare readable 3-day summary (days 1–3)
-        daily = data["daily"]
-        output_lines = [f" **3-Day Forecast for {city_name.title()}**"]
-
-        for i in range(1, 4):
-            date = daily["time"][i]
-            tmin = daily["temperature_2m_min"][i]
-            tmax = daily["temperature_2m_max"][i]
-            rain = daily["precipitation_sum"][i]
-            date_fmt = datetime.strptime(date, "%Y-%m-%d").strftime("%a, %d %b")
-            output_lines.append(
-                f"• **{date_fmt}** — Low: {tmin:.1f}°C | High: {tmax:.1f}°C | Rain: {rain:.1f} mm"
-            )
-
-        return "\n".join(output_lines)
-
-    except Exception as e:
-        return f" Forecast unavailable: {e}"
+    lines = []
+    for i, res in enumerate([r for r in results if ok(r.get("link",""))][:max_results], 1):
+        title = res.get("title", "No title")
+        snippet = (res.get("snippet") or "")[:200]
+        url = res.get("link")
+        lines.append(f"{i}. {title}\n   Snippet: {snippet}\n   Source: {url}")
+    return "Search Results:\n" + ("\n\n".join(lines) if lines else "No search results found.")
 
 
-
-
-
-def weather_with_source(query: str) -> str:
+# ------------------------------------------------------------------------------------
+# Weather – CURRENT conditions only
+# ------------------------------------------------------------------------------------
+def weather_current(query: str) -> str:
     """
-    Unified weather function supporting both OpenWeather (current)
-    and Open-Meteo (forecast) APIs.
+    Get current weather conditions for a *location string* (e.g., 'Hobart, AU', 'Launceston').
+    The agent must pass the location text directly. No cleaning, no branching here.
     """
     try:
-        q_lower = query.lower()
-        cleaned_query = re.sub(
-            r"\b(what|is|the|current|today|tomorrow|weather|in|at|for|forecast|next|week|rain|will|it|be|day|after|like|tell|me|about)\b",
-            "",
-            q_lower
-        )
-        cleaned_query = re.sub(r"[^\w\s]", "", cleaned_query).strip().title()
-        if not cleaned_query:
-            cleaned_query = "Hobart, AU"
-
-        forecast_keywords = ["tomorrow", "forecast", "next", "week", "day after"]
-        is_forecast = any(word in q_lower for word in forecast_keywords)
-
-        if is_forecast:
-            print(" Using Open-Meteo for forecast:", cleaned_query)
-            result = get_forecast_openmeteo(cleaned_query)
-            label = "Forecast"
-        else:
-            print(" Using OpenWeather (LangChain) for current weather:", cleaned_query)
-            result = weather_api.run(cleaned_query)
-            label = "Current Weather"
-
         now_local = datetime.now().strftime("%A, %d %B %Y, %I:%M %p")
-        return f"{label} for {cleaned_query} (as of {now_local}):\n{result}"
-
+        result_text = weather_api.run(query)  # raw string from the LC wrapper
+        return f"Current Weather for {query} (as of {now_local}):\n{result_text}"
     except Exception as e:
-        return f" Unable to fetch weather for '{query}': {e}. Try 'Hobart, AU'."
+        return f"Weather error for '{query}': {e}"
 
-
-
-def trip_budget_planner(query: str) -> str:
-    """
-    Fetch recommended accommodation, food, and rentals from RAG,
-    extract real prices when available, and estimate a minimum travel budget.
-    """
+# ------------------------------------------------------------------------------------
+# Weather – FLEXIBLE multi-day daily forecast (Open-Meteo, 1–7 days)
+# ------------------------------------------------------------------------------------
+def _openmeteo_forecast_days(query: str) -> str:
     try:
-        # --- 1️⃣ Extract place and duration ---
-        place_match = re.search(r"in ([A-Za-z\s]+)", query)
-        days_match = re.search(r"(\d+)\s*(day|days)", query)
-        place = place_match.group(1).strip().title() if place_match else "Hobart"
-        days = int(days_match.group(1)) if days_match else 3
+        q = query.strip()
 
-        # --- 2️⃣ Query RAG for relevant info ---
-        stay_text = rag_query(f"accommodation or camping options in {place}")
-        food_text = rag_query(f"cheap food or cafes in {place}")
-        rental_text = rag_query(f"vehicle or car rental in {place}")
+        # 1) Days: accept "3 day", "3 days", "3-day", "for 3 days"
+        m_days = re.search(r"(?i)\bfor\s+(\d+)\s*[- ]?\s*days?\b", q)
+        if not m_days:
+            m_days = re.search(r"(?i)\b(\d+)\s*[- ]?\s*days?\b", q)
+        days = int(m_days.group(1)) if m_days else 3
+        days = max(1, min(days, 7))
 
-        # --- 3️⃣ Helper: extract numeric cost from text ---
-        def extract_cost(text: str, default: int) -> int:
-            if not text:
-                return default
-            # Look for things like "$70", "AUD 50", "40 per night", "from 60"
-            match = re.search(r"(?:\$|aud\s*)?(\d{2,3})", text.lower())
-            return int(match.group(1)) if match else default
+        # 2) Place:
+        # Prefer the token(s) after "for" or "in"
+        m_place = re.search(r"(?i)\b(?:for|in)\s+([A-Za-z][A-Za-z\s,.\-]{1,80})$", q)
+        if m_place:
+            location = m_place.group(1).strip()
+        else:
+            # Fallback: remove common words and numbers, then tidy punctuation
+            tmp = re.sub(r"(?i)\b(forecast|weather|for|in|of|the|next|day|days|today|tomorrow|week)\b", " ", q)
+            tmp = re.sub(r"\d+", " ", tmp)
+            # remove bullets/leading punctuation and repeated spaces
+            tmp = re.sub(r"^[\-\•\*\s,.;:]+", "", tmp)
+            tmp = re.sub(r"\s{2,}", " ", tmp).strip()
+            location = tmp or "Hobart, AU"
 
-        # --- 4️⃣ Extract prices dynamically ---
-        food_cost = extract_cost(food_text, 40)
-        stay_cost = extract_cost(stay_text, 70)
-        rental_cost = extract_cost(rental_text, 60)
+        # Extra hardening: strip any leading punctuation that might still linger
+        location = re.sub(r"^[\-\•\*\s,.;:]+", "", location).strip(",. ")
 
-        # --- 5️⃣ Extract short descriptive lines ---
-        def summarize(text):
-            if not text:
-                return "No data found."
-            return " ".join(text.strip().split("\n")[:2])[:180]
+        # --- Geocode ---
+        geo = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1},
+            timeout=15,
+        ).json()
 
-        stay_line = summarize(stay_text)
-        food_line = summarize(food_text)
-        rental_line = summarize(rental_text)
+        # If that failed and user didn’t include country, try appending AU
+        if not geo.get("results") and not re.search(r"(?i)\bAU\b|Australia", location):
+            geo = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": f"{location}, AU", "count": 1},
+                timeout=15,
+            ).json()
 
-        # --- 6️⃣ Calculate totals ---
-        total_food = food_cost * days
-        total_stay = stay_cost * days
-        total_rental = rental_cost * days
-        total = total_food + total_stay + total_rental
+        if not geo.get("results"):
+            return f"Forecast error: couldn’t geocode '{location}'. Try 'Hobart, AU'."
 
-        # --- 7️⃣ Build final formatted summary ---
-        return (
-            f"🗺️ **Trip Budget & Planner for {place} ({days} days)**\n\n"
-            f"🏕️ **Accommodation / Camping:** {stay_line}\n"
-            f"🍽️ **Food Options:** {food_line}\n"
-            f"🚗 **Vehicle Rentals:** {rental_line}\n\n"
-            f"💰 **Estimated Cost Breakdown:**\n"
-            f"• Food: ${food_cost} × {days} = ${total_food}\n"
-            f"• Accommodation: ${stay_cost} × {days} = ${total_stay}\n"
-            f"• Vehicle Rental: ${rental_cost} × {days} = ${total_rental}\n"
-            f"----------------------------------\n"
-            f"**Estimated Total: ${total} AUD**"
-        )
+        lat = geo["results"][0]["latitude"]
+        lon = geo["results"][0]["longitude"]
+
+        fc = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+                "timezone": "auto",
+            },
+            timeout=15,
+        ).json()
+
+        daily = fc.get("daily", {})
+        times = daily.get("time", [])
+        tmin = daily.get("temperature_2m_min", [])
+        tmax = daily.get("temperature_2m_max", [])
+        rain = daily.get("precipitation_sum", [])
+
+        if not times or len(times) < (days + 1):
+            return f"Forecast error: insufficient data for {days} days."
+
+        lines = [f"**{days}-Day Forecast for {location}**"]
+        for i in range(1, days + 1):  # skip today
+            d = datetime.strptime(times[i], "%Y-%m-%d").strftime("%a, %d %b")
+            lines.append(f"• {d} — Low: {tmin[i]:.1f}°C | High: {tmax[i]:.1f}°C | Rain: {rain[i]:.1f} mm")
+        return "\n".join(lines)
 
     except Exception as e:
-        return f" Could not generate trip budget: {e}"
+        return f"Forecast error for '{query}': {e}"
 
-
-# Register as LangChain tool
-trip_budget_tool = Tool(
-    name="TripBudgetPlanner",
-    description="Plan a trip by listing accommodation, food, and rental options from RAG and calculating a minimum budget.",
-    func=trip_budget_planner,
+# ------------------------------------------------------------------------------------
+# Trip Budget Planner (RAG-first, no baked-in defaults)
+# ------------------------------------------------------------------------------------
+_PRICE_RE = re.compile(
+    r"(?:\$|aud\s*)?(\d{1,4})(?:\s*(?:per\s*(?:night|day)|/day|/night))?",
+    flags=re.IGNORECASE,
 )
 
+def _first_price(text: str):
+    """Return the first integer price found in text, or None."""
+    m = _PRICE_RE.search(text or "")
+    return int(m.group(1)) if m else None
 
-# Create Tool instances
+def _shorten(text: str, max_lines: int = 3, max_chars: int = 220) -> str:
+    if not text:
+        return "No data found."
+    brief = " ".join(text.strip().split("\n")[:max_lines])
+    return (brief[:max_chars] + "…") if len(brief) > max_chars else brief
+
+def trip_budget_planner(json_input: str) -> str:
+    """
+    Trip budget estimator (RAG-based).
+
+    INPUT (string): JSON object with:
+      - "place": city/area name (e.g., "Hobart")
+      - "days": integer number of days (e.g., 3)
+
+    BEHAVIOR:
+      - Queries the RAG index for accommodation, food, and vehicle rental in the given place.
+      - Extracts only *explicit* numeric prices found in the text (AUD assumed).
+      - Computes totals only for components that have explicit prices.
+      - If a component has no explicit price, it is listed without a computed subtotal.
+      - No hard-coded default costs. No routing logic.
+
+    OUTPUT:
+      A concise markdown summary with bullet points and a breakdown of any computable totals.
+    """
+    try:
+        payload: Dict[str, Any] = json.loads(json_input)
+        place = str(payload.get("place", "")).strip() or "Tasmania"
+        days_raw = payload.get("days", 0)
+
+        # Normalize days to int >= 0
+        try:
+            days = int(days_raw)
+            days = days if days >= 0 else 0
+        except Exception:
+            days = 0
+
+        # Query RAG (document-first)
+        stay_text   = rag_query(f"List accommodation or camping options in {place} with any AUD prices.")
+        food_text   = rag_query(f"List cheap food or cafes in {place} with any AUD prices.")
+        rental_text = rag_query(f"List vehicle or car rental options in {place} with any AUD prices.")
+
+        # Extract first explicit price for each component (if any)
+        stay_price   = _first_price(stay_text)
+        food_price   = _first_price(food_text)
+        rental_price = _first_price(rental_text)
+
+        # Prepare short lines for display
+        stay_line   = _shorten(stay_text)
+        food_line   = _shorten(food_text)
+        rental_line = _shorten(rental_text)
+
+        # Build the response. Totals are computed only when we have prices.
+        lines: List[str] = [
+            f"🗺️ **Trip Budget & Planner for {place}{f' ({days} days)' if days else ''}**",
+            "",
+            f"🏕️ **Accommodation / Camping:** {stay_line}",
+            f"🍽️ **Food Options:** {food_line}",
+            f"🚗 **Vehicle Rentals:** {rental_line}",
+            "",
+            "💰 **Estimated Cost Breakdown (AUD, only where explicit prices were found):**",
+        ]
+
+        components = []
+        if stay_price is not None and days:
+            components.append(("Accommodation", stay_price, days))
+        if food_price is not None and days:
+            components.append(("Food", food_price, days))
+        if rental_price is not None and days:
+            components.append(("Vehicle Rental", rental_price, days))
+
+        for label, unit, n_days in components:
+            subtotal = unit * n_days
+            lines.append(f"• {label}: ${unit} × {n_days} = ${subtotal}")
+
+        if components:
+            total = sum(unit * n_days for _, unit, n_days in components)
+            lines.append(f"----------------------------------\n**Estimated Total: ${total} AUD**")
+        else:
+            lines.append("• No explicit per-day prices detected; unable to compute a total.")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"TripBudgetPlanner error: {e}"
+
+# ------------------------------------------------------------------------------------
+# LangChain Tool objects (descriptions tell the LLM exactly how to call them)
+# ------------------------------------------------------------------------------------
 duckduckgo_tool = Tool(
     name="DuckDuckGoSearch",
-    description="Use for web facts that are not in the PDF or for fresh/live info. Return snippets+URLs. Combine this with other tools when the question has multiple parts.",
+    description=(
+        "Web search for fresh/external info. "
+        "Input: a plain English query. "
+        "Output: top results with short snippets and source URLs."
+    ),
     func=duckduckgo_with_sources,
 )
 
 weather_tool = Tool(
     name="WeatherTool",
-    description="Use for current weather or forecast for a location. Combine with RAGTool for broader travel answers.",
-    func=weather_with_source,
+    description=(
+        "Get CURRENT weather conditions for a location. "
+        "Input: a location string like 'Hobart, AU' or 'Launceston'. "
+        "Do NOT ask for forecasts here; this tool returns *current* conditions only."
+    ),
+    func=weather_current,
 )
+
+WeatherForecast_tool = Tool(
+    name="WeatherForecast",
+    description=(
+        "Get a flexible multi-day DAILY forecast (min/max temperature and precipitation) "
+        "for any location using Open-Meteo. Input: a natural-language query such as "
+        "'forecast for Hobart', '5-day forecast in Launceston', or '7 day weather Hobart'. "
+        "The tool automatically detects the number of days (1–7) and the location."
+    ),
+    func=_openmeteo_forecast_days,
+)
+
 trip_budget_tool = Tool(
     name="TripBudgetPlanner",
     description=(
-        "Plans a trip by retrieving accommodation, food, and rental data "
-        "from the RAG documents, extracting real prices, and estimating a total budget."
+        "Estimate a backpacker trip budget using ONLY facts from the RAG documents. "
+        "Input: a JSON string with keys, for example: "
+        "{\"place\": \"Hobart\", \"days\": 3}. "
+        "It will list accommodation/food/rental items found in the docs and compute totals "
+        "ONLY when explicit per-day AUD prices are present. No defaults."
     ),
     func=trip_budget_planner,
 )

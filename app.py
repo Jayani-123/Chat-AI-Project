@@ -22,13 +22,10 @@ def on_submit(message, history):
     # Get response from agent (returns dict with 'answer' and 'sources')
     result = process_query(message, session_id=session_id)
     answer = result.get("answer", "No answer generated.")
-    sources = result.get("sources", "")
+
 
     # Combine nicely formatted reply (but no repetition)
     full_response = f"**Answer:** {answer}"
-    if sources:
-        full_response += f"\n\n**Sources:** {sources}"
-
     return full_response
 
 
@@ -73,7 +70,7 @@ custom_css = """
 with gr.Blocks(css=custom_css, title=config["ui"]["title"]) as demo:
     gr.Markdown(
         f"""
-        <h1 style='text-align:center; font-size:2.5rem; color:#2e7d32;'>🏕️ {config['ui']['title']}</h1>
+        <h1 style='text-align:center; font-size:2.5rem; color:#2e7d32;'> {config['ui']['title']}</h1>
         <p style='text-align:center; font-size:1.1rem;'>{config['ui']['description']}</p>
         <p style='text-align:center;'>Ask about travel tips, weather, or backpacking spots!</p>
         """
@@ -83,14 +80,12 @@ with gr.Blocks(css=custom_css, title=config["ui"]["title"]) as demo:
         fn=on_submit,
         type="messages",
         examples=config["ui"]["examples"],
-        title=config["ui"]["title"],
-        description=config["ui"]["description"],
         submit_btn="Submit",
         theme="default",
     )
 
     # Optional button to clear session memory
-    gr.Button("Reset Chat 🧹").click(clear_chat, None, None)
+    gr.Button("Reset Chat").click(clear_chat, None, None)
 
 # -------------------------------------------------------------------
 # APP LAUNCH

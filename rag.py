@@ -1,14 +1,3 @@
-"""
-RAG (Retrieval-Augmented Generation) Module
--------------------------------------------
-Handles:
-- Loading and splitting backpacker guide PDFs
-- Persistent Chroma vector database
-- Hybrid retrieval (MMR)
-- RAG chain execution with LLM
-- Formatted answers with cited sources
-"""
-
 import os
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader
@@ -18,14 +7,14 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.agents import Tool
-from langchain.globals import set_llm_cache
 from langchain_community.cache import InMemoryCache
-from prompts import rag_prompt
+from prompts import rag_prompt, rag_tool_prompt
 from config import config
 
 # -------------------------------------------------------------------
 # 1. CACHE
 # -------------------------------------------------------------------
+from langchain.globals import set_llm_cache
 set_llm_cache(InMemoryCache())
 
 # -------------------------------------------------------------------
@@ -127,8 +116,8 @@ def rag_with_sources(query: str):
     result = retrieval_chain.invoke({"input": query})
     answer = result.get("answer", "No answer generated.")
     context_docs = result.get("context", [])
-    sources = format_sources(context_docs)
-    return f"**Answer:** {answer}\n\n**Sources:**\n{sources}"
+    # sources = format_sources(context_docs)
+    return f"**Answer:** {answer}\n\n"
 
 # -------------------------------------------------------------------
 # 8. TOOL REGISTRATION
@@ -142,7 +131,6 @@ rag_tool = Tool(
     ),
     func=rag_with_sources,
 )
-from prompts import rag_tool_prompt  # import the new one at the top
 
 def rag_query(question: str) -> str:
     """Lightweight factual query for internal tools like budget planner."""

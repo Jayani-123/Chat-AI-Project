@@ -1,47 +1,44 @@
-"""
-Agent Module (LangChain v0.3+ compatible)
------------------------------------------
-Handles reasoning and routing between:
-- RAGTool (document-based answers)
-- WeatherTool (live data)
-- DuckDuckGoSearch (web lookup)
-
-✔ Fixed: LLM now *sees* conversation history
-✔ Persistent memory per session
-✔ RunnableWithMessageHistory (v0.3+ style)
-✔ Clean structured outputs
-"""
+from __future__ import annotations
 
 from collections import defaultdict
 from functools import lru_cache
+from typing import Dict, Any, List, Tuple
+
 from langchain.agents import create_react_agent, AgentExecutor
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain.schema.output_parser import StrOutputParser
+import json
+import re
+import logging
 
 from prompts import agent_prompt
-from tools import duckduckgo_tool, weather_tool, trip_budget_tool
+from tools import duckduckgo_tool, weather_tool, WeatherForecast_tool, trip_budget_tool
 from rag import rag_tool, get_llm
 from config import config
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------
 #  TOOLS + LLM
 # -------------------------------------------------------------------
-tools = [rag_tool, weather_tool, duckduckgo_tool]
+tools = [rag_tool, weather_tool, WeatherForecast_tool, duckduckgo_tool, trip_budget_tool]
 llm = get_llm()
 output_parser = StrOutputParser()
 
 # -------------------------------------------------------------------
 #  MEMORY MANAGEMENT
 # -------------------------------------------------------------------
-session_histories = defaultdict(ChatMessageHistory)
+session_histories: Dict[str, ChatMessageHistory] = defaultdict(ChatMessageHistory)
 
-def get_session_history(session_id: str):
-    """Retrieve or create chat history for each session."""
+def get_session_history(session_id: str) -> ChatMessageHistory:
+    """Retrieve or create chat history for a given session."""
     return session_histories[session_id]
 
-def get_memory(session_id: str):
+def get_memory(session_id: str) -> ConversationBufferMemory:
     """Return ConversationBufferMemory tied to that ChatMessageHistory."""
     return ConversationBufferMemory(
         memory_key="chat_history",
@@ -54,33 +51,33 @@ def get_memory(session_id: str):
 # -------------------------------------------------------------------
 #  AGENT CREATION (ReAct)
 # -------------------------------------------------------------------
-agent = create_react_agent(
-    tools=tools,
+react_agent = create_react_agent(
     llm=llm,
-    prompt=agent_prompt.partial(tools="\n".join([t.name for t in tools])),
+    tools=tools,
+    prompt=agent_prompt,
 )
 
 # -------------------------------------------------------------------
 #  EXECUTOR FACTORY
 # -------------------------------------------------------------------
-def make_agent_executor(session_id: str):
+def make_agent_executor(session_id: str) -> AgentExecutor:
     """Build an AgentExecutor with active session memory."""
     memory = get_memory(session_id)
     return AgentExecutor(
-        agent=agent,
+        agent=react_agent,
         tools=tools,
-        memory=memory,  
+        memory=memory,
         handle_parsing_errors=True,
-        verbose=False,
+        verbose=True,  # Enable verbose for debugging
         return_intermediate_steps=True,
-        max_iterations=config["agent"]["max_iterations"],
+        max_iterations=config.get("agent", {}).get("max_iterations", 8),
     )
 
 # -------------------------------------------------------------------
 #  CACHED EXECUTOR WRAPPER
 # -------------------------------------------------------------------
 @lru_cache(maxsize=8)
-def get_agent_executor(session_id="default"):
+def get_agent_executor(session_id: str = "default") -> RunnableWithMessageHistory:
     """Cache a memory-enabled AgentExecutor per session."""
     base_exec = make_agent_executor(session_id)
     return RunnableWithMessageHistory(
@@ -90,127 +87,114 @@ def get_agent_executor(session_id="default"):
         history_messages_key="chat_history",
     )
 
-# -------------------------------------------------------------------
-#  SOURCE CLEANUP
-# -------------------------------------------------------------------
-def extract_sources_from_steps(intermediate_steps):
-    """Collect and de-duplicate sources cleanly without repeating 'Sources:' headers."""
-    all_sources = set()
+# # -------------------------------------------------------------------
+# #  SOURCE CLEANUP
+# # -------------------------------------------------------------------
+def extract_sources_from_steps(intermediate_steps: List[Tuple[Any, str]]) -> str:
+    """
+    Collect and de-duplicate sources cleanly.
+    Looks through tool observations for lines that likely contain sources.
+    """
+    needles = ("Source:", "Sources:", "DuckDuckGoSearch", "http", "https", "backpacker")
+    scrub = ("### Sources Used:", "**Sources:**", "Sources:", "Source -", "•")
+    found = []
+
     for _, observation in intermediate_steps:
-        # Split the text lines that came from tools (rag_tool, duckduckgo_tool, etc.)
-        for line in observation.split("\n"):
-            # Keep only lines that *look like sources or URLs*
-            if any(x in line for x in ["Source:", "DuckDuckGoSearch", "backpacker2.pdf", "http"]):
-                clean_line = (
-                    line.replace("### Sources Used:", "")
-                        .replace("**Sources:**", "")
-                        .replace("Sources:", "")
-                        .replace("Source -", "")
-                        .replace("•", "")
-                        .strip()
-                )
-                if clean_line:
-                    all_sources.add(clean_line)
+        if not observation:
+            continue
+        for raw in observation.splitlines():
+            line = raw.strip()
+            if any(n in line for n in needles):
+                for s in scrub:
+                    line = line.replace(s, "")
+                line = line.strip("-•: ").strip()
+                if line:
+                    found.append(line)
 
-    # Return a simple, deduplicated list — no internal “Sources:” header
-    return "\n".join(sorted(all_sources))
-
-
+    # stable order while de-duplicating
+    seen = set()
+    deduped = []
+    for line in found:
+        if line not in seen:
+            seen.add(line)
+            deduped.append(line)
+    return "\n".join(deduped)
 
 # -------------------------------------------------------------------
-#  MAIN PROCESS FUNCTION (Enhanced with weather + fallback handling)
+#  HELPER: EXTRACT PLACE AND DAYS FOR TRIP BUDGET PLANNER
 # -------------------------------------------------------------------
-def process_query(query: str, session_id: str = "default"):
+def extract_place_and_days(query: str) -> str:
+    """Extract place and days from query and return JSON string for TripBudgetPlanner."""
+    try:
+        # Detect number of days
+        days_match = re.search(r"(\d+)\s*(?:day|days)", query.lower())
+        days = int(days_match.group(1)) if days_match else 3
+
+        # Extract location (remove filler words & digits)
+        cleaned = re.sub(r"\b(forecast|for|in|of|the|next|day|days|weather|trip|plan|budget)\b", "", query, flags=re.I)
+        cleaned = re.sub(r"\d+", "", cleaned).strip().strip(",.")
+        place = cleaned or "Tasmania"
+
+        result = json.dumps({"place": place, "days": days})
+        logger.debug(f"Extracted for TripBudgetPlanner: {result}")
+        return result
+    except Exception as e:
+        result = json.dumps({"place": "Tasmania", "days": 3})
+        logger.error(f"Fallback for TripBudgetPlanner: {result}, error: {e}")
+        return result
+
+# -------------------------------------------------------------------
+#  MAIN PROCESS FUNCTION (Prompt-driven routing)
+# -------------------------------------------------------------------
+def process_query(query: str, session_id: str = "default") -> Dict[str, str]:
     """
-    Routes query through the ReAct agent and returns structured data.
-    Handles weather detection, timeouts, iteration limits, and fallback routing gracefully.
+    Routes query through the ReAct agent using prompt-defined rules.
+    Handles all query types via the agent's reasoning.
     """
-    query_lower = query.lower()
-
-    # ---  1. Early Weather Detection (runs before agent) ---
-    weather_keywords = [
-        "weather", "temperature", "rain", "forecast", "wind",
-        "climate", "humidity", "snow", "storm", "tomorrow", "next week"
-    ]
-    if any(word in query_lower for word in weather_keywords):
-        print(" Detected weather query — routing directly to WeatherTool.")
-        try:
-            # Use existing weather tool (already imported at top)
-            weather_result = weather_tool.run(query)
-            return {
-                "answer": weather_result,
-                "sources": "WeatherTool"
-            }
-        except Exception as e:
-            return {
-                "answer": f" Weather lookup failed: {e}",
-                "sources": "Weather tool error"
-            }
-
-        # ---  2. Budget / Trip Planner Detection ---
-    budget_keywords = [
-        "budget", "cost", "plan my trip", "trip plan", "itinerary", "estimate", "calculate", "expenses"
-    ]
-    if any(word in query_lower for word in budget_keywords):
-        print(" Detected budget/trip planner query — routing directly to TripBudgetPlanner Tool.")
-        try:
-            budget_result = trip_budget_tool.run(query)
-            return {
-                "answer": budget_result,
-                "sources": "TripBudgetPlanner Tool"
-            }
-        except Exception as e:
-            return {
-                "answer": f" Budget planning failed: {e}",
-                "sources": "TripBudgetPlanner Tool error"
-            }
-
-    
-    # ---  2. Normal RAG Agent Processing ---
     try:
         executor = get_agent_executor(session_id)
-        result = executor.invoke(
-            {"input": query},
+        # Preprocess query for TripBudgetPlanner to guide the agent
+        input_query = query
+        if any(keyword in query.lower() for keyword in ["trip", "budget", "plan", "cost", "itinerary", "expense"]):
+            trip_budget_input = extract_place_and_days(query)
+            # Append guidance to the query to ensure TripBudgetPlanner is used with correct input
+            input_query = f"{query}\n\nFor trip planning, use TripBudgetPlanner with input: {trip_budget_input}"
+        
+        input_dict = {"input": input_query}
+        logger.debug(f"Input to executor: {input_dict}")
+        result: Dict[str, Any] = executor.invoke(
+            input_dict,
             config={"configurable": {"session_id": session_id}},
         )
+        logger.debug(f"Executor result: {result}")
 
-        answer = result.get("output", "No answer generated.")
+        answer = result.get("output", "") or "No answer generated."
         sources = extract_sources_from_steps(result.get("intermediate_steps", []))
 
-        # --- Clean up the source text ---
-        if sources:
-            lines = [line.strip() for line in sources.splitlines() if line.strip()]
-            cleaned = [l for l in lines if not l.lower().startswith("sources")]
-            sources = "\n".join(dict.fromkeys(cleaned))
+        # Fallback to DuckDuckGo if the agent didn't produce something meaningful
+        if not answer or len(answer.strip()) < 10 or "No answer" in answer:
+            try:
+                web_results = duckduckgo_tool.run(query)
+                logger.debug(f"Fallback to DuckDuckGo: {web_results}")
+                return {"answer": web_results, "sources": "DuckDuckGo Search (fallback)"}
+            except Exception as e:
+                logger.error(f"DuckDuckGo fallback failed: {e}")
+                return {"answer": answer.strip(), "sources": sources.strip() or "No sources"}
 
-        # --- 3. Fallback to DuckDuckGo if no relevant RAG answer ---
-        if not answer or "No answer" in answer or len(answer.strip()) < 10:
-            print(" No relevant match in RAG — using DuckDuckGo fallback...")
-            web_results = duckduckgo_tool.duckduckgo_with_sources(query)
-            return {
-                "answer": web_results,
-                "sources": "DuckDuckGo Search "
-            }
-
-        # --- 4. Normal Success ---
-        return {"answer": answer.strip(), "sources": sources.strip()}
+        return {"answer": answer.strip(), "sources": sources.strip() or "—"}
 
     except Exception as e:
         error_msg = str(e)
+        logger.error(f"Unexpected error in process_query: {error_msg}")
+        # Handle agent stop/timeout conditions gracefully
+        if ("iteration limit" in error_msg.lower()) or ("time limit" in error_msg.lower()):
+            try:
+                web_results = duckduckgo_tool.run(query)
+                logger.debug(f"Timeout fallback to DuckDuckGo: {web_results}")
+                return {"answer": web_results, "sources": "DuckDuckGo Search (timeout fallback)"}
+            except Exception as e:
+                logger.error(f"DuckDuckGo timeout fallback failed: {e}")
+                return {"answer": "The agent timed out and the fallback also failed.", "sources": "—"}
 
-        # --- 5. Handle agent stop / timeout conditions gracefully ---
-        if "iteration limit" in error_msg.lower() or "time limit" in error_msg.lower():
-            print(" Agent reached time or iteration limit — switching to DuckDuckGo fallback.")
-            web_results = duckduckgo_tool.duckduckgo_with_sources(query)
-            return {
-                "answer": web_results,
-                "sources": "DuckDuckGo Search  (timeout fallback)"
-            }
-
-        # --- 6. Handle any other unexpected errors ---
-        return {
-            "answer": f" Unexpected error: {error_msg}",
-            "sources": "No sources due to error."
-        }
-
-
+        # Any other unexpected errors
+        return {"answer": f"Unexpected error: {error_msg}", "sources": "No sources due to error."}

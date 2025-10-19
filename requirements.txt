@@ -167,7 +167,7 @@ tzdata==2025.2
 urllib3==2.3.0
 urllib3-future==2.14.904
 uvicorn==0.37.0
-uvloop==0.21.0
+uvloop==0.21.0 ; sys_platform != "win32"
 wassima==2.0.2
 watchfiles==1.1.0
 websocket-client==1.8.0
