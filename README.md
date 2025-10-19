@@ -48,7 +48,7 @@ The **Tasmania Backpacker Bot** acts as a hybrid knowledge assistant — retriev
 The system uses a **ReAct (Reason + Act) agent** guided by a structured prompt (`agent_prompt`) that enforces deterministic routing rules.  
 Each user query is classified through the **prompt logic** rather than hard-coded branching.
 
-**Routing Summary:**
+### Routing Summary
 
 | Query Type | Routed Tool | Example |
 |-------------|-------------|----------|
@@ -65,50 +65,51 @@ Each user query is classified through the **prompt logic** rather than hard-code
 
 ## 💻 Running the System Locally
 
-### 1️⃣ Clone and set up environment
+### 1️⃣ Clone and set up the environment
+
 ```bash
 git clone https://github.com/Jayani-123/Chat-AI-Project.git
 cd Chat-AI-Project/tas_backpacker_bot
 python -m venv venv
 venv\Scripts\activate  # or source venv/bin/activate
 pip install -r requirements.txt
+2️⃣ Set environment variables
+Create a .env file in the project root with:
 
-
-### Set environment variables
-
-Create a .env file:
+env
+Copy code
 GOOGLE_API_KEY=your_gemini_key_here
 OPENWEATHERMAP_API_KEY=your_openweathermap_key_here
-
-Run the Gradio app
+3️⃣ Run the Gradio app
+bash
+Copy code
 python app.py
+Then open http://localhost:7860 in your browser.
 
-Then open http://localhost:7860
- in your browser.
-
- Example Queries and Expected Outputs
+🧠 Example Queries and Expected Outputs
 Example 1 — Weather Forecast
-
 User:
 
 Forecast the weather for Hobart for 3 days
 
-Expected:
+Expected Output:
 
+yaml
+Copy code
 **3-Day Forecast for Hobart**
 • Mon, 20 Oct — Low: 8.2 °C | High: 17.4 °C | Rain: 1.2 mm
 • Tue, 21 Oct — Low: 9.1 °C | High: 18.0 °C | Rain: 0.4 mm
 • Wed, 22 Oct — Low: 10.0 °C | High: 19.5 °C | Rain: 0.0 mm
 Sources: WeatherForecast (Open-Meteo API)
-
 Example 2 — Trip Budget
-
 User:
 
 Estimate a 3-day backpacker budget near Hobart
 
-Expected:
+Expected Output:
 
+pgsql
+Copy code
 🗺️ Trip Budget & Planner for Hobart (3 days)
 🏕️ Accommodation / Camping: $40 × 3 = $120
 🍽️ Food (per meal): $25 × 3 = $75
@@ -116,27 +117,26 @@ Expected:
 ----------------------------------
 💰 Estimated Total: $291 AUD
 Sources: TripBudgetPlanner (backpacker PDF guides)
-
 ⚙️ Error Handling and Limitations
-
 Known Limitations & Insights
 
-⚠️ Document Coverage: The backpacker PDFs don’t always contain prices for food or accommodation in every region.
+⚠️ Document Coverage: Backpacker PDFs don’t always contain prices for food or accommodation in every region.
 
 🌦️ Weather Forecast Geocoding: Queries like “3-day forecast for Hobart” initially failed due to string cleaning issues (hyphens, dashes). Fixed via regex sanitization.
 
-🌐 Tool Constraints: DuckDuckGo sometimes returns duplicate or outdated links when no strong keywords are given.
+🌐 Tool Constraints: DuckDuckGo sometimes returns duplicate or outdated links when weak keywords are provided.
 
 💬 LLM Limitations: The Gemini model can occasionally over-generate “Sources” twice; handled with regex cleanup.
 
-🧩 RAG Gaps: Retrieval quality depends on the embedding granularity; overly small chunks reduce context coherence.
+🧩 RAG Gaps: Retrieval quality depends on embedding granularity; overly small chunks reduce context coherence.
 
-🕒 Latency: Multi-tool chains (e.g., weather + RAG) increase response time slightly.
+🕒 Latency: Multi-tool chains (e.g., weather + RAG) slightly increase response time.
 
-🧱 Unrelated Git Histories: Early version control issues were resolved via --allow-unrelated-histories merge.
-
+🧱 Version Control: Early unrelated Git histories were resolved via --allow-unrelated-histories merge.
 
 🧩 Repository Structure
+bash
+Copy code
 tas_backpacker_bot/
 ├── app.py                     # Gradio UI launcher
 ├── agent.py                   # Agent creation & process_query logic
@@ -146,14 +146,10 @@ tas_backpacker_bot/
 ├── config.py / config.yml     # Configurations and API keys
 ├── data/docs/                 # Backpacker PDF guides
 └── README.md                  # Project documentation
+👩‍💻 Contributors
+This project was developed collaboratively as part of KIT719 – Assignment 2 at the University of Tasmania.
 
-
-## 👩‍💻 Contributors
-
-This project was developed collaboratively as part of **KIT719 – Assignment 2** at the **University of Tasmania**.
-
-| Student ID | Name |
-|-------------|------|
-| **707202** | **Jayani Madusha Edirisinghe** |
-| **706778** | **Rakhitha Uthpalawanna Dassanayake Mudiyanselage** |
-| **682393** | **Jahanvi Dasari** |
+Student ID	Name
+707202	Jayani Madusha Edirisinghe
+706778	Rakhitha Uthpalawanna Dassanayake Mudiyanselage
+682393	Jahanvi Dasari
