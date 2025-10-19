@@ -147,12 +147,13 @@ tas_backpacker_bot/
 ├── data/docs/                 # Backpacker PDF guides
 └── README.md                  # Project documentation
 
+
 ## 👩‍💻 Contributors
 
 This project was developed collaboratively as part of **KIT719 – Assignment 2** at the **University of Tasmania**.
 
-| Name | Student ID |
-|------|-------------|
-| **Jayani Madusha Edirisinghe** | 707202 |
-| **Rakhitha Uthpalawanna Dassanayake Mudiyanselage** | 706778 |
-| **Jahanvi Dasari** | 682393 |
+| Student ID | Name |
+|-------------|------|
+| **707202** | **Jayani Madusha Edirisinghe** |
+| **706778** | **Rakhitha Uthpalawanna Dassanayake Mudiyanselage** |
+| **682393** | **Jahanvi Dasari** |
